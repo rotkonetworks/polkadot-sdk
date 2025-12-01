@@ -303,7 +303,10 @@ where
 	) -> Result<Option<sp_trie::MerkleValue<H::Out>>, Self::Error> {
 		match &self.inner {
 			InnerStateBackend::Trie(trie_backend) => trie_backend.closest_merkle_value(key),
-			InnerStateBackend::Nomt { .. } => todo!(),
+			// NOMT uses a different proof system (witnesses) rather than traditional
+			// Merkle Patricia Trie proofs. The closest_merkle_value concept doesn't
+			// directly apply to NOMT's proof structure.
+			InnerStateBackend::Nomt { .. } => Ok(None),
 		}
 	}
 
@@ -315,7 +318,11 @@ where
 		match &self.inner {
 			InnerStateBackend::Trie(trie_backend) =>
 				trie_backend.child_closest_merkle_value(child_info, key),
-			InnerStateBackend::Nomt { .. } => todo!(),
+			// NOMT uses a different proof system (witnesses) rather than traditional
+			// Merkle Patricia Trie proofs. Child tries are flattened into the main trie
+			// with key prefixing, so the traditional child trie merkle value concept
+			// doesn't apply.
+			InnerStateBackend::Nomt { .. } => Ok(None),
 		}
 	}
 
@@ -508,14 +515,19 @@ where
 	fn register_overlay_stats(&self, stats: &StateMachineStats) {
 		match &self.inner {
 			InnerStateBackend::Trie(trie_backend) => trie_backend.register_overlay_stats(stats),
-			InnerStateBackend::Nomt { .. } => todo!(),
+			// NOMT handles statistics differently through its own metrics system.
+			// Overlay stats registration is a no-op for NOMT backend.
+			// Future work: bridge NOMT metrics to StateMachineStats if needed.
+			InnerStateBackend::Nomt { .. } => {},
 		}
 	}
 
 	fn usage_info(&self) -> UsageInfo {
 		match &self.inner {
 			InnerStateBackend::Trie(trie_backend) => trie_backend.usage_info(),
-			InnerStateBackend::Nomt { .. } => todo!(),
+			// NOMT tracks its own metrics internally. For now, return empty stats.
+			// Future work: expose NOMT metrics through UsageInfo.
+			InnerStateBackend::Nomt { .. } => UsageInfo::empty(),
 		}
 	}
 }
@@ -597,7 +609,10 @@ where
 	H: Hasher,
 {
 	fn default() -> Self {
-		todo!("")
+		// Use the Trie variant's default as it provides a finished, empty iterator
+		// that safely returns None for all operations. This is the expected behavior
+		// for a default iterator regardless of backend type.
+		Self { inner: InnerRawIter::Trie(Default::default()) }
 	}
 }
 

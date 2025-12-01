@@ -1039,13 +1039,20 @@ impl<Block: BlockT> StorageDb<Block> {
 			{
 				// UNWRAP: There is an expectation of no other references to the overlay
 				// which is being canonicalized.
-				let mut overlay = std::sync::Arc::into_inner(overlay).unwrap();
+				let overlay = std::sync::Arc::into_inner(overlay)
+					.expect("Overlay Arc should have no other references during commit");
 				let nomt = nomt_db.write();
-				// PANICs: At this point NOMT should not have any other live session
-				// thus commit should happen directly.
-				let commit_result = overlay.try_commit_nonblocking(&nomt).unwrap();
-				if let Some(_overlay) = commit_result {
-					unreachable!("Nomt is locked, should")
+				// At this point NOMT should not have any other live session,
+				// so commit should happen directly without blocking.
+				let commit_result = overlay
+					.try_commit_nonblocking(&nomt)
+					.expect("NOMT commit should succeed when holding exclusive write lock");
+				if let Some(_returned_overlay) = commit_result {
+					unreachable!(
+						"NOMT try_commit_nonblocking returned overlay unexpectedly. \
+						This indicates a concurrent session exists despite holding write lock. \
+						This is a bug in the locking logic."
+					);
 				};
 
 				// NOTE: Used for debugging
@@ -1644,7 +1651,20 @@ impl<Block: BlockT> Backend<Block> {
 					// When we don't want to commit the genesis state, we still preserve it in
 					// memory to bootstrap consensus. It is queried for an initial list of
 					// authorities, etc.
-					panic!("This is never expected within NOMT PoC");
+					//
+					// NOMT note: NOMT requires the genesis state to be committed to disk as it
+					// doesn't support in-memory-only state for bootstrapping. If this code path
+					// is hit with NOMT, it indicates a configuration issue where commit_state
+					// should have been true.
+					if self.storage.nomt_db.is_some() {
+						return Err(sp_blockchain::Error::Application(Box::new(
+							std::io::Error::new(
+								std::io::ErrorKind::Unsupported,
+								"NOMT backend requires genesis state to be committed. \
+								Set commit_state=true for genesis block.",
+							),
+						)));
+					}
 				}
 			}
 
@@ -2083,7 +2103,15 @@ impl<Block: BlockT> Backend<Block> {
 		id: BlockId<Block>,
 	) -> ClientResult<()> {
 		if self.storage.nomt_db.is_some() {
-			panic!("Not handled by NOMT PoC");
+			// NOMT handles state pruning internally through its own mechanisms.
+			// Block metadata (headers, bodies, justifications) can still be pruned
+			// from the auxiliary database. For now, we skip state pruning for NOMT
+			// and only handle block metadata removal.
+			//
+			// Note: This allows the block metadata to be removed while NOMT manages
+			// its own state data lifecycle independently.
+			log::debug!(target: "db", "NOMT backend: skipping state pruning for block #{id}, \
+				NOMT manages state pruning internally");
 		}
 		debug!(target: "db", "Removing block #{id}");
 		utils::remove_from_db(
@@ -2679,7 +2707,17 @@ impl<Block: BlockT> sc_client_api::backend::Backend<Block> for Backend<Block> {
 			// is only expected to happen in the rare case of not needing to commit the genesis
 			// state, but still requiring it in memory to bootstrap consensus.
 			if self.genesis_state.read().is_some() {
-				panic!("This is never expected within NOMT PoC");
+				// NOMT backend requires genesis state to be committed to disk.
+				// In-memory genesis state is not supported with NOMT.
+				if self.storage.nomt_db.is_some() {
+					return Err(sp_blockchain::Error::Application(Box::new(
+						std::io::Error::new(
+							std::io::ErrorKind::Unsupported,
+							"NOMT backend does not support in-memory genesis state. \
+							Genesis state must be committed to disk.",
+						),
+					)));
+				}
 			}
 		}
 

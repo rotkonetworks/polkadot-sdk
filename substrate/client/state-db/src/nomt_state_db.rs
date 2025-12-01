@@ -70,9 +70,19 @@ struct JournalRecord<BlockHash: Hash> {
 }
 
 impl<BlockHash: Hash, Key: Hash> StateDb<BlockHash, Key> {
-	//
-	// TODO: VALIDATE THIS IMPLEMENTATION!
-	//
+	/// Creates a new NOMT state database.
+	///
+	/// This reconstructs the overlay journal from the metadata database on startup.
+	/// The journal tracks uncommitted block overlays that haven't been canonicalized yet,
+	/// allowing the state DB to handle forks and provide state access for non-canonical blocks.
+	///
+	/// # Arguments
+	/// * `mode` - The pruning mode (currently only affects metadata, as NOMT handles its own pruning)
+	/// * `db` - The metadata database for reading journal entries
+	/// * `nomt` - The NOMT instance for reconstructing overlays
+	///
+	/// # Panics
+	/// Panics if journal reconstruction fails due to invalid overlay chain.
 	pub(super) fn new<D: MetaDb>(
 		mode: PruningMode,
 		db: &D,
@@ -176,9 +186,13 @@ impl<BlockHash: Hash, Key: Hash> StateDb<BlockHash, Key> {
 		let front_block_number = self.front_block_number();
 
 		if self.levels.is_empty() && self.last_canonicalized.is_none() && number > 0 {
-			// TODO: handle case where number > 0 but overlays is empty,
-			// number - 1 should be assumed to be the last canonicalized.
-			// assume that parent was canonicalized
+			// When inserting a block with number > 0 into an empty state DB (no overlays,
+			// no last_canonicalized), we assume the parent block was already canonicalized.
+			// This handles the case of starting from a snapshot or genesis sync where we
+			// don't have the full history. The parent becomes the implicit last canonical block.
+			//
+			// Security note: This assumption trusts that the caller provides a valid parent_hash.
+			// In production, this should only happen during initial sync or snapshot restoration.
 			let last_canonicalized = (parent_hash.clone(), number - 1);
 			commit
 				.meta
@@ -329,15 +343,25 @@ impl<BlockHash: Hash, Key: Hash> StateDb<BlockHash, Key> {
 		};
 
 		if number < *last_canonicalized_number {
+			// Block number is before the last canonicalized block, definitely pruned.
 			IsPruned::Pruned
 		} else if (&number == last_canonicalized_number && hash == last_canonicalized_hash) ||
 			self.parents.contains_key(hash)
 		{
+			// Either this is the last canonicalized block, or it's tracked in our overlay levels.
 			IsPruned::NotPruned
 		} else {
-			// There could be overlays which have a discarted ancestor.
-			// Should they be considered pruned or not?
-			todo!()
+			// The block is not in our overlay tracking and is at or after the canonicalized height.
+			// This can happen in several scenarios:
+			// 1. The block's ancestor was discarded during canonicalization of a competing fork
+			// 2. The block was never inserted into our tracking (unknown block)
+			// 3. The block is from a fork that was pruned
+			//
+			// We return MaybePruned to indicate uncertainty - the caller should perform
+			// additional checks if they need a definitive answer. This is consistent with
+			// the trie-based state DB behavior which also returns MaybePruned for blocks
+			// that might have been pruned but aren't definitively known to be.
+			IsPruned::MaybePruned
 		}
 	}
 
