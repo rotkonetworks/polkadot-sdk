@@ -341,6 +341,12 @@ pub fn open_database(db_source: &DatabaseSource) -> Result<Arc<dyn Database>, Er
 		DatabaseSource::Custom { .. } => {
 			unimplemented!("No polkadot subsystem db for custom source.");
 		},
+		// NOMT is used for state storage. For the parachains subsystem database
+		// (availability, approval voting, etc.), we use ParityDB alongside NOMT.
+		DatabaseSource::Nomt { paritydb_path, .. } => parachains_db::open_creating_paritydb(
+			paritydb_path.parent().ok_or(Error::DatabasePathRequired)?.into(),
+			parachains_db::CacheSizes::default(),
+		)?,
 	};
 	Ok(parachains_db)
 }
