@@ -48,12 +48,14 @@ use polkadot_primitives::{CollatorPair, Id as ParaId, OccupiedCoreAssumption};
 use crate::{
 	collator as collator_util,
 	collators::{claim_queue_at, BackingGroupConnectionHelper},
-	export_pov_to_path,
+	export_pov_to_path, LOG_TARGET,
 };
 use futures::prelude::*;
 use sc_client_api::{backend::AuxStore, BlockBackend, BlockOf};
 use sc_consensus::BlockImport;
+use sc_held_transactions::HeldTransactionQueue;
 use sc_network_types::PeerId;
+use sc_transaction_pool_api::{TransactionPool, TransactionSource};
 use sp_api::ProvideRuntimeApi;
 use sp_application_crypto::AppPublic;
 use sp_blockchain::HeaderBackend;
@@ -66,7 +68,7 @@ use sp_timestamp::Timestamp;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 /// Parameters for [`run`].
-pub struct Params<BI, CIDP, Client, Backend, RClient, CHP, ProposerFactory, CS> {
+pub struct Params<Block: BlockT, BI, CIDP, Client, Backend, RClient, CHP, ProposerFactory, CS, Pool = ()> {
 	/// Inherent data providers. Only non-consensus inherent data should be provided, i.e.
 	/// the timestamp, slot, and paras inherents should be omitted, as they are set by this
 	/// collator.
@@ -104,6 +106,11 @@ pub struct Params<BI, CIDP, Client, Backend, RClient, CHP, ProposerFactory, CS> 
 	/// The maximum percentage of the maximum PoV size that the collator can use.
 	/// It will be removed once <https://github.com/paritytech/polkadot-sdk/issues/6020> is fixed.
 	pub max_pov_percentage: Option<u32>,
+	/// Optional held transaction queue for private tx inclusion.
+	/// When provided, transactions are flushed to pool right before block building.
+	pub held_queue: Option<HeldTransactionQueue<Block>>,
+	/// Transaction pool - required when held_queue is Some.
+	pub transaction_pool: Option<Arc<Pool>>,
 }
 
 /// Get the current parachain slot from a given block hash.
@@ -151,8 +158,8 @@ where
 }
 
 /// Run async-backing-friendly Aura.
-pub fn run<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS>(
-	params: Params<BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS>,
+pub fn run<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Pool>(
+	params: Params<Block, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Pool>,
 ) -> impl Future<Output = ()> + Send + 'static
 where
 	Block: BlockT,
@@ -177,14 +184,15 @@ where
 	P: Pair + Send + Sync + 'static,
 	P::Public: AppPublic + Member + Codec,
 	P::Signature: TryFrom<Vec<u8>> + Member + Codec,
+	Pool: TransactionPool<Block = Block> + 'static,
 {
-	run_with_export::<_, P, _, _, _, _, _, _, _, _>(ParamsWithExport { params, export_pov: None })
+	run_with_export::<_, P, _, _, _, _, _, _, _, _, _>(ParamsWithExport { params, export_pov: None })
 }
 
 /// Parameters for [`run_with_export`].
-pub struct ParamsWithExport<BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS> {
+pub struct ParamsWithExport<Block: BlockT, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Pool = ()> {
 	/// The parameters.
-	pub params: Params<BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS>,
+	pub params: Params<Block, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Pool>,
 
 	/// When set, the collator will export every produced `POV` to this folder.
 	pub export_pov: Option<PathBuf>,
@@ -194,8 +202,9 @@ pub struct ParamsWithExport<BI, CIDP, Client, Backend, RClient, CHP, Proposer, C
 ///
 /// This is exactly the same as [`run`], but it supports the optional export of each produced `POV`
 /// to the file system.
-pub fn run_with_export<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS>(
+pub fn run_with_export<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Pool>(
 	ParamsWithExport { mut params, export_pov }: ParamsWithExport<
+		Block,
 		BI,
 		CIDP,
 		Client,
@@ -204,6 +213,7 @@ pub fn run_with_export<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Propos
 		CHP,
 		Proposer,
 		CS,
+		Pool,
 	>,
 ) -> impl Future<Output = ()> + Send + 'static
 where
@@ -229,6 +239,7 @@ where
 	P: Pair + Send + Sync + 'static,
 	P::Public: AppPublic + Member + Codec,
 	P::Signature: TryFrom<Vec<u8>> + Member + Codec,
+	Pool: TransactionPool<Block = Block> + 'static,
 {
 	async move {
 		cumulus_client_collator::initialize_collator_subsystems(
@@ -433,6 +444,29 @@ where
 					// fixed, the reservation should be removed.
 					validation_data.max_pov_size * 85 / 100
 				} as usize;
+
+				// Flush held transactions to pool right before block building.
+				// This ensures transactions remain invisible until the exact moment of inclusion.
+				if let (Some(ref queue), Some(ref pool)) = (&params.held_queue, &params.transaction_pool) {
+					let held_txs = queue.drain();
+					if !held_txs.is_empty() {
+						tracing::debug!(
+							target: LOG_TARGET,
+							count = held_txs.len(),
+							"Flushing held transactions to pool before block building"
+						);
+						for tx in held_txs {
+							if let Err(e) = pool.submit_one(parent_hash, TransactionSource::Local, tx).await
+							{
+								tracing::warn!(
+									target: LOG_TARGET,
+									error = ?e,
+									"Failed to submit held transaction to pool"
+								);
+							}
+						}
+					}
+				}
 
 				match collator
 					.collate(

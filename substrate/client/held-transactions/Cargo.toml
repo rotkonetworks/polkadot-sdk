@@ -1,0 +1,18 @@
+[package]
+name = "sc-held-transactions"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+homepage.workspace = true
+repository.workspace = true
+description = "Held transaction queue for slot-aware block building"
+
+[lints]
+workspace = true
+
+[dependencies]
+codec = { workspace = true, default-features = true }
+parking_lot = { workspace = true, default-features = true }
+tracing = { workspace = true, default-features = true }
+sp-runtime = { workspace = true, default-features = true }

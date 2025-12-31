@@ -67,7 +67,7 @@ use sc_network::{config::FullNetworkConfiguration, NotificationMetrics, PeerId};
 use sc_service::{Configuration, Error, PartialComponents, TaskManager};
 use sc_telemetry::TelemetryHandle;
 use sc_transaction_pool::TransactionPoolHandle;
-use sc_transaction_pool_api::OffchainTransactionPoolFactory;
+use sc_transaction_pool_api::{OffchainTransactionPoolFactory, TransactionPool};
 use sp_api::{ApiExt, ProvideRuntimeApi};
 use sp_consensus::Environment;
 use sp_core::traits::SpawnEssentialNamed;
@@ -363,6 +363,7 @@ where
 					backend_for_rpc.clone(),
 					transaction_pool.clone(),
 					None,
+					None, // held_queue - dev mode doesn't use it
 				)?;
 				Ok(module)
 			})
@@ -504,7 +505,7 @@ where
 	<AuraId as AppCrypto>::Pair: Send + Sync,
 {
 	#[docify::export_content]
-	fn launch_slot_based_collator<CIDP, CHP, Proposer, CS, Spawner>(
+	fn launch_slot_based_collator<CIDP, CHP, Proposer, CS, Spawner, Pool>(
 		params_with_export: SlotBasedParams<
 			Block,
 			ParachainBlockImport<
@@ -523,6 +524,7 @@ where
 			Proposer,
 			CS,
 			Spawner,
+			Pool,
 		>,
 	) where
 		CIDP: CreateInherentDataProviders<Block, ()> + 'static,
@@ -531,8 +533,9 @@ where
 		Proposer: Environment<Block> + Send + Sync + 'static,
 		CS: CollatorServiceInterface<Block> + Send + Sync + Clone + 'static,
 		Spawner: SpawnEssentialNamed + Clone + 'static,
+		Pool: TransactionPool<Block = Block> + 'static,
 	{
-		slot_based::run::<Block, <AuraId as AppCrypto>::Pair, _, _, _, _, _, _, _, _, _>(
+		slot_based::run::<Block, <AuraId as AppCrypto>::Pair, _, _, _, _, _, _, _, _, _, _>(
 			params_with_export,
 		);
 	}
@@ -580,7 +583,10 @@ where
 		backend: Arc<ParachainBackend<Block>>,
 		node_extra_args: NodeExtraArgs,
 		block_import_handle: SlotBasedBlockImportHandle<Block>,
+		held_queue: Option<sc_held_transactions::HeldTransactionQueue<Block>>,
 	) -> Result<(), Error> {
+		let pool_for_collator = held_queue.as_ref().map(|_| transaction_pool.clone());
+
 		let proposer = sc_basic_authorship::ProposerFactory::new(
 			task_manager.spawn_handle(),
 			client.clone(),
@@ -640,6 +646,8 @@ where
 			spawner: task_manager.spawn_essential_handle(),
 			export_pov: node_extra_args.export_pov,
 			max_pov_percentage: node_extra_args.max_pov_percentage,
+			held_queue,
+			transaction_pool: pool_for_collator,
 		};
 
 		// We have a separate function only to be able to use `docify::export` on this piece of
@@ -726,7 +734,10 @@ where
 		backend: Arc<ParachainBackend<Block>>,
 		node_extra_args: NodeExtraArgs,
 		_: (),
+		held_queue: Option<sc_held_transactions::HeldTransactionQueue<Block>>,
 	) -> Result<(), Error> {
+		let pool_for_collator = held_queue.as_ref().map(|_| transaction_pool.clone());
+
 		let proposer = sc_basic_authorship::ProposerFactory::new(
 			task_manager.spawn_handle(),
 			client.clone(),
@@ -786,12 +797,14 @@ where
 				authoring_duration: Duration::from_millis(2000),
 				reinitialize: false,
 				max_pov_percentage: node_extra_args.max_pov_percentage,
+				held_queue,
+				transaction_pool: pool_for_collator,
 			},
 		};
 
 		let fut = async move {
 			wait_for_aura(client).await;
-			aura::run_with_export::<Block, <AuraId as AppCrypto>::Pair, _, _, _, _, _, _, _, _>(
+			aura::run_with_export::<Block, <AuraId as AppCrypto>::Pair, _, _, _, _, _, _, _, _, _>(
 				params,
 			)
 			.await;

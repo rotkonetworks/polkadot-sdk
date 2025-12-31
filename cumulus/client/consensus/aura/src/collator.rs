@@ -36,6 +36,8 @@ use cumulus_primitives_core::{
 };
 use cumulus_relay_chain_interface::RelayChainInterface;
 use sc_client_api::BackendTransaction;
+use sc_held_transactions::HeldTransactionQueue;
+use sc_transaction_pool_api::{TransactionPool, TransactionSource};
 use sp_consensus::{Environment, ProposeArgs, Proposer};
 
 use polkadot_node_primitives::{Collation, MaybeCompressedPoV};
@@ -61,7 +63,7 @@ use sp_runtime::{
 };
 use sp_state_machine::StorageChanges;
 use sp_timestamp::Timestamp;
-use std::{error::Error, time::Duration};
+use std::{error::Error, sync::Arc, time::Duration};
 
 /// Parameters for instantiating a [`Collator`].
 pub struct Params<BI, CIDP, RClient, PF, CS> {
@@ -82,6 +84,16 @@ pub struct Params<BI, CIDP, RClient, PF, CS> {
 	/// The collator service used for bundling proposals into collations and announcing
 	/// to the network.
 	pub collator_service: CS,
+}
+
+/// Extended parameters for [`CollatorWithHeldQueue`] with held transaction support.
+pub struct ParamsWithHeldQueue<Block: BlockT, BI, CIDP, RClient, PF, CS, Pool> {
+	/// Base parameters.
+	pub base: Params<BI, CIDP, RClient, PF, CS>,
+	/// Held transaction queue for private tx inclusion.
+	pub held_queue: HeldTransactionQueue<Block>,
+	/// Transaction pool.
+	pub transaction_pool: Arc<Pool>,
 }
 
 /// Parameters for [`Collator::build_block_and_import`].
@@ -377,6 +389,127 @@ where
 	/// Get the underlying collator service.
 	pub fn collator_service(&self) -> &CS {
 		&self.collator_service
+	}
+}
+
+/// Collator with held transaction queue support.
+///
+/// This wraps the standard [`Collator`] and adds the ability to flush held transactions
+/// to the pool right before block building. Transactions in the held queue are not visible
+/// via `author_pendingExtrinsics` RPC, providing privacy for sensitive transactions.
+pub struct CollatorWithHeldQueue<Block: BlockT, P, BI, CIDP, RClient, PF, CS, Pool> {
+	inner: Collator<Block, P, BI, CIDP, RClient, PF, CS>,
+	held_queue: HeldTransactionQueue<Block>,
+	transaction_pool: Arc<Pool>,
+}
+
+impl<Block, P, BI, CIDP, RClient, PF, CS, Pool>
+	CollatorWithHeldQueue<Block, P, BI, CIDP, RClient, PF, CS, Pool>
+where
+	Block: BlockT,
+	RClient: RelayChainInterface,
+	CIDP: CreateInherentDataProviders<Block, ()> + 'static,
+	BI: BlockImport<Block> + ParachainBlockImportMarker + Send + Sync + 'static,
+	PF: Environment<Block>,
+	CS: CollatorServiceInterface<Block>,
+	Pool: TransactionPool<Block = Block> + 'static,
+	P: Pair,
+	P::Public: AppPublic + Member,
+	P::Signature: TryFrom<Vec<u8>> + Member + Codec,
+{
+	/// Create a new collator with held transaction queue support.
+	pub fn new(params: ParamsWithHeldQueue<Block, BI, CIDP, RClient, PF, CS, Pool>) -> Self {
+		Self {
+			inner: Collator::new(params.base),
+			held_queue: params.held_queue,
+			transaction_pool: params.transaction_pool,
+		}
+	}
+
+	/// Get the held transaction queue.
+	pub fn held_queue(&self) -> &HeldTransactionQueue<Block> {
+		&self.held_queue
+	}
+
+	/// Flush held transactions to pool with Local priority.
+	async fn flush_held_to_pool(&self, at: Block::Hash) {
+		let txs = self.held_queue.drain();
+		if txs.is_empty() {
+			return;
+		}
+
+		tracing::info!(
+			target: crate::LOG_TARGET,
+			"Flushing {} held transactions to pool before block building",
+			txs.len()
+		);
+
+		for tx in txs {
+			let hash = self.transaction_pool.hash_of(&tx);
+			match self.transaction_pool.submit_one(at, TransactionSource::Local, tx).await {
+				Ok(_) => tracing::debug!(
+					target: crate::LOG_TARGET,
+					?hash,
+					"Held transaction submitted to pool"
+				),
+				Err(e) => tracing::warn!(
+					target: crate::LOG_TARGET,
+					?hash,
+					?e,
+					"Failed to submit held transaction to pool"
+				),
+			}
+		}
+	}
+
+	/// Delegate to inner collator for inherent data creation.
+	pub async fn create_inherent_data(
+		&self,
+		relay_parent: PHash,
+		validation_data: &PersistedValidationData,
+		parent_hash: Block::Hash,
+		timestamp: impl Into<Option<Timestamp>>,
+		collator_peer_id: PeerId,
+	) -> Result<(ParachainInherentData, InherentData), Box<dyn Error + Send + Sync + 'static>> {
+		self.inner
+			.create_inherent_data(relay_parent, validation_data, parent_hash, timestamp, collator_peer_id)
+			.await
+	}
+
+	/// Build and import a parachain block, flushing held transactions first.
+	pub async fn build_block_and_import(
+		&mut self,
+		params: BuildBlockAndImportParams<'_, Block, P>,
+	) -> Result<Option<BuiltBlock<Block>>, Box<dyn Error + Send + 'static>> {
+		// Flush held transactions to pool BEFORE proposing.
+		let parent_hash = params.parent_header.hash();
+		self.flush_held_to_pool(parent_hash).await;
+
+		self.inner.build_block_and_import(params).await
+	}
+
+	/// Collate with held transaction support.
+	pub async fn collate(
+		&mut self,
+		parent_header: &Block::Header,
+		slot_claim: &SlotClaim<P::Public>,
+		additional_pre_digest: impl Into<Option<Vec<DigestItem>>>,
+		inherent_data: (ParachainInherentData, InherentData),
+		proposal_duration: Duration,
+		max_pov_size: usize,
+	) -> Result<Option<(Collation, ParachainBlockData<Block>)>, Box<dyn Error + Send + 'static>> {
+		// Flush held transactions to pool BEFORE proposing.
+		let parent_hash = parent_header.hash();
+		self.flush_held_to_pool(parent_hash).await;
+
+		self.inner
+			.collate(parent_header, slot_claim, additional_pre_digest, inherent_data, proposal_duration, max_pov_size)
+			.await
+	}
+
+	/// Get a reference to the collator service.
+	pub fn collator_service(&self) -> &CS {
+		self.inner.collator_service()
 	}
 }
 

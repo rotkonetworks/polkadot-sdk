@@ -21,6 +21,7 @@
 pub(crate) mod aura;
 pub mod chain_spec;
 pub mod command;
+pub mod held;
 pub mod rpc;
 pub mod runtime;
 pub mod spec;
@@ -132,4 +133,11 @@ pub struct NodeExtraArgs {
 
 	/// Parameters for storage monitoring.
 	pub storage_monitor: sc_storage_monitor::StorageMonitorParams,
+
+	/// If true, enable held transaction queue for private tx inclusion.
+	///
+	/// When enabled, provides `author_submitHeld` RPC for submitting transactions
+	/// that are held until block building time, preventing visibility via
+	/// `author_pendingExtrinsics`.
+	pub enable_held_queue: bool,
 }

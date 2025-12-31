@@ -45,7 +45,9 @@ use polkadot_primitives::{
 use sc_client_api::{backend::AuxStore, BlockBackend, BlockOf, UsageProvider};
 use sc_consensus::BlockImport;
 use sc_consensus_aura::SlotDuration;
+use sc_held_transactions::HeldTransactionQueue;
 use sc_network_types::PeerId;
+use sc_transaction_pool_api::{TransactionPool, TransactionSource};
 use sp_api::ProvideRuntimeApi;
 use sp_application_crypto::AppPublic;
 use sp_blockchain::HeaderBackend;
@@ -68,6 +70,7 @@ pub struct BuilderTaskParams<
 	CHP,
 	Proposer,
 	CS,
+	Pool = (),
 > {
 	/// Inherent data providers. Only non-consensus inherent data should be provided, i.e.
 	/// the timestamp, slot, and paras inherents should be omitted, as they are set by this
@@ -110,11 +113,16 @@ pub struct BuilderTaskParams<
 	/// The maximum percentage of the maximum PoV size that the collator can use.
 	/// It will be removed once https://github.com/paritytech/polkadot-sdk/issues/6020 is fixed.
 	pub max_pov_percentage: Option<u32>,
+	/// Optional held transaction queue for private tx inclusion.
+	/// When provided, transactions are flushed to pool right before block building.
+	pub held_queue: Option<HeldTransactionQueue<Block>>,
+	/// Transaction pool - required when held_queue is Some.
+	pub transaction_pool: Option<Arc<Pool>>,
 }
 
 /// Run block-builder.
-pub fn run_block_builder<Block, P, BI, CIDP, Client, Backend, RelayClient, CHP, Proposer, CS>(
-	params: BuilderTaskParams<Block, BI, CIDP, Client, Backend, RelayClient, CHP, Proposer, CS>,
+pub fn run_block_builder<Block, P, BI, CIDP, Client, Backend, RelayClient, CHP, Proposer, CS, Pool>(
+	params: BuilderTaskParams<Block, BI, CIDP, Client, Backend, RelayClient, CHP, Proposer, CS, Pool>,
 ) -> impl Future<Output = ()> + Send + 'static
 where
 	Block: BlockT,
@@ -140,6 +148,7 @@ where
 	P: Pair + Send + Sync + 'static,
 	P::Public: AppPublic + Member + Codec,
 	P::Signature: TryFrom<Vec<u8>> + Member + Codec,
+	Pool: TransactionPool<Block = Block> + 'static,
 {
 	async move {
 		tracing::info!(target: LOG_TARGET, "Starting slot-based block-builder task.");
@@ -160,6 +169,8 @@ where
 			para_backend,
 			slot_offset,
 			max_pov_percentage,
+			held_queue,
+			transaction_pool,
 		} = params;
 
 		let mut slot_timer = SlotTimer::<_, _, P>::new_with_offset(
@@ -423,6 +434,29 @@ where
 
 				continue;
 			};
+
+			// Flush held transactions to pool right before block building.
+			// This ensures transactions remain invisible until the exact moment of inclusion.
+			if let (Some(ref queue), Some(ref pool)) = (&held_queue, &transaction_pool) {
+				let held_txs = queue.drain();
+				if !held_txs.is_empty() {
+					tracing::debug!(
+						target: crate::LOG_TARGET,
+						count = held_txs.len(),
+						"Flushing held transactions to pool before block building"
+					);
+					for tx in held_txs {
+						if let Err(e) = pool.submit_one(parent_hash, TransactionSource::Local, tx).await
+						{
+							tracing::warn!(
+								target: crate::LOG_TARGET,
+								error = ?e,
+								"Failed to submit held transaction to pool"
+							);
+						}
+					}
+				}
+			}
 
 			let Ok(Some(candidate)) = collator
 				.build_block_and_import(BuildBlockAndImportParams {

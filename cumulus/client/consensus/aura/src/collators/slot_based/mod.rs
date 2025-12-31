@@ -81,7 +81,9 @@ use polkadot_primitives::{
 };
 use sc_client_api::{backend::AuxStore, BlockBackend, BlockOf, UsageProvider};
 use sc_consensus::BlockImport;
+use sc_held_transactions::HeldTransactionQueue;
 use sc_network_types::PeerId;
+use sc_transaction_pool_api::TransactionPool;
 use sc_utils::mpsc::tracing_unbounded;
 use sp_api::ProvideRuntimeApi;
 use sp_application_crypto::AppPublic;
@@ -104,7 +106,7 @@ mod slot_timer;
 mod tests;
 
 /// Parameters for [`run`].
-pub struct Params<Block, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Spawner> {
+pub struct Params<Block: BlockT, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Spawner, Pool = ()> {
 	/// Inherent data providers. Only non-consensus inherent data should be provided, i.e.
 	/// the timestamp, slot, and paras inherents should be omitted, as they are set by this
 	/// collator.
@@ -149,11 +151,16 @@ pub struct Params<Block, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, 
 	/// The maximum percentage of the maximum PoV size that the collator can use.
 	/// It will be removed once <https://github.com/paritytech/polkadot-sdk/issues/6020> is fixed.
 	pub max_pov_percentage: Option<u32>,
+	/// Optional held transaction queue for private tx inclusion.
+	/// When provided, transactions are flushed to pool right before block building.
+	pub held_queue: Option<HeldTransactionQueue<Block>>,
+	/// Transaction pool - required when held_queue is Some.
+	pub transaction_pool: Option<Arc<Pool>>,
 }
 
 /// Run aura-based block building and collation task.
-pub fn run<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Spawner>(
-	params: Params<Block, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Spawner>,
+pub fn run<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Spawner, Pool>(
+	params: Params<Block, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Spawner, Pool>,
 ) where
 	Block: BlockT,
 	Client: ProvideRuntimeApi<Block>
@@ -179,6 +186,7 @@ pub fn run<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Spaw
 	P::Public: AppPublic + Member + Codec,
 	P::Signature: TryFrom<Vec<u8>> + Member + Codec,
 	Spawner: SpawnEssentialNamed + Clone + 'static,
+	Pool: TransactionPool<Block = Block> + 'static,
 {
 	let Params {
 		create_inherent_data_providers,
@@ -201,6 +209,8 @@ pub fn run<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Spaw
 		export_pov,
 		relay_chain_slot_duration,
 		max_pov_percentage,
+		held_queue,
+		transaction_pool,
 	} = params;
 
 	let (tx, rx) = tracing_unbounded("mpsc_builder_to_collator", 100);
@@ -234,10 +244,12 @@ pub fn run<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Spaw
 		relay_chain_slot_duration,
 		slot_offset,
 		max_pov_percentage,
+		held_queue,
+		transaction_pool,
 	};
 
 	let block_builder_fut =
-		run_block_builder::<Block, P, _, _, _, _, _, _, _, _>(block_builder_params);
+		run_block_builder::<Block, P, _, _, _, _, _, _, _, _, _>(block_builder_params);
 
 	spawner.spawn_essential_blocking(
 		"slot-based-block-builder",

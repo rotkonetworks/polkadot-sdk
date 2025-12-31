@@ -4293,8 +4293,10 @@ dependencies = [
  "sc-consensus-aura",
  "sc-consensus-babe",
  "sc-consensus-slots",
+ "sc-held-transactions",
  "sc-network-types",
  "sc-telemetry",
+ "sc-transaction-pool-api",
  "sc-utils",
  "schnellru",
  "sp-api",
@@ -15931,6 +15933,7 @@ dependencies = [
  "sc-consensus-aura",
  "sc-consensus-manual-seal",
  "sc-executor",
+ "sc-held-transactions",
  "sc-keystore",
  "sc-network",
  "sc-network-statement",
@@ -20105,6 +20108,16 @@ dependencies = [
  "tempfile",
  "wasmtime",
  "wat",
+]
+
+[[package]]
+name = "sc-held-transactions"
+version = "0.1.0"
+dependencies = [
+ "parity-scale-codec",
+ "parking_lot 0.12.3",
+ "sp-runtime",
+ "tracing",
 ]
 
 [[package]]

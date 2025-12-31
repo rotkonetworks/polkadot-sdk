@@ -19,10 +19,12 @@
 #![warn(missing_docs)]
 
 use crate::common::{
+	held::{HeldTransactionApiServer, HeldTransactionRpc},
 	types::{AccountId, Balance, Nonce, ParachainBackend, ParachainClient},
 	ConstructNodeRuntimeApi,
 };
 use pallet_transaction_payment_rpc::{TransactionPayment, TransactionPaymentApiServer};
+use sc_held_transactions::HeldTransactionQueue;
 use sc_rpc::{
 	dev::{Dev, DevApiServer},
 	statement::{StatementApiServer, StatementStore},
@@ -35,12 +37,13 @@ use substrate_state_trie_migration_rpc::{StateMigration, StateMigrationApiServer
 /// A type representing all RPC extensions.
 pub type RpcExtension = jsonrpsee::RpcModule<()>;
 
-pub(crate) trait BuildRpcExtensions<Client, Backend, Pool, StatementStore> {
+pub(crate) trait BuildRpcExtensions<Block: BlockT, Client, Backend, Pool, StatementStore> {
 	fn build_rpc_extensions(
 		client: Arc<Client>,
 		backend: Arc<Backend>,
 		pool: Arc<Pool>,
 		statement_store: Option<Arc<StatementStore>>,
+		held_queue: Option<HeldTransactionQueue<Block>>,
 	) -> sc_service::error::Result<RpcExtension>;
 }
 
@@ -48,6 +51,7 @@ pub(crate) struct BuildParachainRpcExtensions<Block, RuntimeApi>(PhantomData<(Bl
 
 impl<Block: BlockT, RuntimeApi>
 	BuildRpcExtensions<
+		Block,
 		ParachainClient<Block, RuntimeApi>,
 		ParachainBackend<Block>,
 		sc_transaction_pool::TransactionPoolHandle<Block, ParachainClient<Block, RuntimeApi>>,
@@ -66,15 +70,20 @@ where
 			sc_transaction_pool::TransactionPoolHandle<Block, ParachainClient<Block, RuntimeApi>>,
 		>,
 		statement_store: Option<Arc<sc_statement_store::Store>>,
+		held_queue: Option<HeldTransactionQueue<Block>>,
 	) -> sc_service::error::Result<RpcExtension> {
 		let build = || -> Result<RpcExtension, Box<dyn std::error::Error + Send + Sync>> {
 			let mut module = RpcExtension::new(());
 
-			module.merge(System::new(client.clone(), pool).into_rpc())?;
+			module.merge(System::new(client.clone(), pool.clone()).into_rpc())?;
 			module.merge(TransactionPayment::new(client.clone()).into_rpc())?;
 			module.merge(StateMigration::new(client.clone(), backend).into_rpc())?;
 			if let Some(statement_store) = statement_store {
 				module.merge(StatementStore::new(statement_store).into_rpc())?;
+			}
+			// Held transaction submission for collators (unsafe RPC)
+			if let Some(queue) = held_queue {
+				module.merge(HeldTransactionRpc::new(queue).into_rpc())?;
 			}
 			module.merge(Dev::new(client).into_rpc())?;
 

@@ -28,6 +28,7 @@ use crate::{
 		ConstructNodeRuntimeApi, NodeBlock, NodeExtraArgs,
 	},
 };
+use sc_held_transactions::HeldTransactionQueue;
 use codec::Encode;
 use cumulus_client_bootnodes::{start_bootnode_tasks, StartBootnodeTasksParams};
 use cumulus_client_cli::CollatorOptions;
@@ -105,6 +106,7 @@ where
 		backend: Arc<ParachainBackend<Block>>,
 		node_extra_args: NodeExtraArgs,
 		block_import_extra_return_value: BIAuxiliaryData,
+		held_queue: Option<HeldTransactionQueue<Block>>,
 	) -> Result<(), sc_service::Error>;
 }
 
@@ -297,6 +299,7 @@ pub(crate) trait BaseNodeSpec {
 
 pub(crate) trait NodeSpec: BaseNodeSpec {
 	type BuildRpcExtensions: BuildRpcExtensions<
+		Self::Block,
 		ParachainClient<Self::Block, Self::RuntimeApi>,
 		ParachainBackend<Self::Block>,
 		TransactionPoolHandle<Self::Block, ParachainClient<Self::Block, Self::RuntimeApi>>,
@@ -449,11 +452,20 @@ pub(crate) trait NodeSpec: BaseNodeSpec {
 				);
 			}
 
+			// Create held transaction queue if enabled (for collators only)
+			let held_queue = if validator && node_extra_args.enable_held_queue {
+				info!("🔒 Held transaction queue enabled - author_submitHeld RPC available");
+				Some(HeldTransactionQueue::<Self::Block>::new())
+			} else {
+				None
+			};
+
 			let rpc_builder = {
 				let client = client.clone();
 				let transaction_pool = transaction_pool.clone();
 				let backend_for_rpc = backend.clone();
 				let statement_store = statement_store.clone();
+				let held_queue = held_queue.clone();
 
 				Box::new(move |_| {
 					Self::BuildRpcExtensions::build_rpc_extensions(
@@ -461,6 +473,7 @@ pub(crate) trait NodeSpec: BaseNodeSpec {
 						backend_for_rpc.clone(),
 						transaction_pool.clone(),
 						statement_store.clone(),
+						held_queue.clone(),
 					)
 				})
 			};
@@ -575,6 +588,7 @@ pub(crate) trait NodeSpec: BaseNodeSpec {
 					backend.clone(),
 					node_extra_args,
 					block_import_auxiliary_data,
+					held_queue,
 				)?;
 			}
 

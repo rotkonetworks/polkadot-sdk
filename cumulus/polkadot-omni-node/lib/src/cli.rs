@@ -223,6 +223,20 @@ pub struct Cli<Config: CliConfig> {
 	#[arg(long)]
 	pub enable_statement_store: bool,
 
+	/// Enable held transaction queue for private transaction inclusion.
+	///
+	/// When enabled, provides the `author_submitHeld` RPC method which queues transactions
+	/// privately until block building time. Unlike `author_submitExtrinsic`, these
+	/// transactions are NOT visible via `author_pendingExtrinsics` and are NOT gossiped.
+	///
+	/// Requires `--rpc-methods unsafe` to expose the RPC.
+	///
+	/// This is useful for recovering funds from compromised accounts with sweeper bots.
+	/// Combined with `--reserved-only --reserved-nodes ""` for network isolation,
+	/// transactions remain invisible to attackers until block inclusion.
+	#[arg(long)]
+	pub enable_held_queue: bool,
+
 	#[arg(skip)]
 	pub(crate) _phantom: PhantomData<Config>,
 }
@@ -269,6 +283,7 @@ impl<Config: CliConfig> Cli<Config> {
 			max_pov_percentage: self.run.experimental_max_pov_percentage,
 			enable_statement_store: self.enable_statement_store,
 			storage_monitor: self.storage_monitor.clone(),
+			enable_held_queue: self.enable_held_queue,
 		}
 	}
 
