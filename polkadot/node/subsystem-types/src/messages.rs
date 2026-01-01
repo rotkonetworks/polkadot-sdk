@@ -476,6 +476,15 @@ pub enum NetworkBridgeTxMessage {
 		/// The peer set we want the connection on.
 		peer_set: PeerSet,
 	},
+
+	/// Get the known network addresses for an authority from the authority discovery cache.
+	/// Used for diagnostic logging when network requests fail.
+	GetAuthorityAddresses {
+		/// The authority to look up addresses for.
+		authority_id: AuthorityDiscoveryId,
+		/// Channel to receive the resolved addresses (if any).
+		response: oneshot::Sender<Option<HashSet<Multiaddr>>>,
+	},
 }
 
 /// Availability Distribution Message.

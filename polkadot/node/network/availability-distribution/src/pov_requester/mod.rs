@@ -16,6 +16,8 @@
 
 //! PoV requester takes care of requesting PoVs from validators of a backing group.
 
+use std::net::IpAddr;
+
 use futures::{channel::oneshot, future::BoxFuture, FutureExt};
 
 use polkadot_node_network_protocol::request_response::{
@@ -29,9 +31,8 @@ use polkadot_node_subsystem::{
 	overseer,
 };
 use polkadot_node_subsystem_util::runtime::RuntimeInfo;
-use polkadot_primitives::{
-	AuthorityDiscoveryId, CandidateHash, Hash, Id as ParaId, ValidatorIndex,
-};
+use polkadot_primitives::{AuthorityDiscoveryId, CandidateHash, Hash, Id as ParaId, ValidatorIndex};
+use sc_network::{multiaddr::Protocol, Multiaddr};
 
 use crate::{
 	error::{Error, FatalError, JfyiError, Result},
@@ -58,6 +59,7 @@ pub async fn fetch_pov<Context>(
 		.get(from_validator.0 as usize)
 		.ok_or(JfyiError::InvalidValidatorIndex)?
 		.clone();
+
 	let (req, pending_response) = OutgoingRequest::new(
 		Recipient::Authority(authority_id.clone()),
 		PoVFetchingRequest { candidate_hash },
@@ -88,36 +90,58 @@ async fn fetch_pov_job(
 	tx: oneshot::Sender<PoV>,
 	metrics: Metrics,
 ) {
-	if let Err(err) = do_fetch_pov(pov_hash, pending_response, tx, metrics).await {
-		gum::warn!(target: LOG_TARGET, ?err, ?para_id, ?pov_hash, ?authority_id, "fetch_pov_job");
+	if let Err((err, failed_peer_addr)) =
+		do_fetch_pov(pov_hash, pending_response, tx, metrics).await
+	{
+		// Extract just the IP from the failed peer address if available
+		let peer_ip: Option<IpAddr> = failed_peer_addr.as_ref().and_then(|addr| {
+			addr.iter().find_map(|proto| match proto {
+				Protocol::Ip4(ip) => Some(IpAddr::V4(ip)),
+				Protocol::Ip6(ip) => Some(IpAddr::V6(ip)),
+				_ => None,
+			})
+		});
+
+		gum::warn!(
+			target: LOG_TARGET,
+			?err,
+			?para_id,
+			?pov_hash,
+			?authority_id,
+			?peer_ip,
+			"fetch_pov_job",
+		);
 	}
 }
 
 /// Do the actual work of waiting for the response.
+/// Returns Ok(()) on success, or Err((Error, Option<Multiaddr>)) on failure.
+/// The Multiaddr is the peer address if available from the network error.
 async fn do_fetch_pov(
 	pov_hash: Hash,
 	pending_response: BoxFuture<'static, std::result::Result<PoVFetchingResponse, RequestError>>,
 	tx: oneshot::Sender<PoV>,
 	metrics: Metrics,
-) -> Result<()> {
-	let response = pending_response.await.map_err(Error::FetchPoV);
+) -> std::result::Result<(), (Error, Option<Multiaddr>)> {
+	let response = pending_response.await;
 	let pov = match response {
 		Ok(PoVFetchingResponse::PoV(pov)) => pov,
 		Ok(PoVFetchingResponse::NoSuchPoV) => {
 			metrics.on_fetched_pov(NOT_FOUND);
-			return Err(Error::NoSuchPoV)
+			return Err((Error::NoSuchPoV, None))
 		},
 		Err(err) => {
 			metrics.on_fetched_pov(FAILED);
-			return Err(err)
+			let peer_addr = err.peer_address().cloned();
+			return Err((Error::FetchPoV(err), peer_addr))
 		},
 	};
 	if pov.hash() == pov_hash {
 		metrics.on_fetched_pov(SUCCEEDED);
-		tx.send(pov).map_err(|_| Error::SendResponse)
+		tx.send(pov).map_err(|_| (Error::SendResponse, None))
 	} else {
 		metrics.on_fetched_pov(FAILED);
-		Err(Error::UnexpectedPoV)
+		Err((Error::UnexpectedPoV, None))
 	}
 }
 

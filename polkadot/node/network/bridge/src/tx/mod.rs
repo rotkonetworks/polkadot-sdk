@@ -363,6 +363,20 @@ where
 				.await;
 			return (network_service, authority_discovery_service)
 		},
+
+		NetworkBridgeTxMessage::GetAuthorityAddresses { authority_id, response } => {
+			gum::trace!(
+				target: LOG_TARGET,
+				action = "GetAuthorityAddresses",
+				?authority_id,
+				"Looking up addresses for authority",
+			);
+
+			let addrs = authority_discovery_service
+				.get_addresses_by_authority_id(authority_id)
+				.await;
+			let _ = response.send(addrs);
+		},
 	}
 	(network_service, authority_discovery_service)
 }

@@ -243,8 +243,8 @@ impl Network for Arc<dyn NetworkService> {
 		let (protocol, OutgoingRequest { peer, payload, pending_response, fallback_request }) =
 			req.encode_request();
 
-		let peer_id = match peer {
-			Recipient::Peer(peer_id) => Some(peer_id),
+		let (peer_id, resolved_addrs) = match peer {
+			Recipient::Peer(peer_id) => (Some(peer_id), Vec::new()),
 			Recipient::Authority(authority) => {
 				gum::trace!(
 					target: LOG_TARGET,
@@ -253,6 +253,7 @@ impl Network for Arc<dyn NetworkService> {
 				);
 
 				let mut found_peer_id = None;
+				let mut addrs = Vec::new();
 				// Note: `get_addresses_by_authority_id` searched in a cache, and it thus expected
 				// to be very quick.
 				for addr in authority_discovery
@@ -265,10 +266,11 @@ impl Network for Arc<dyn NetworkService> {
 						Ok(v) => v,
 						Err(_) => continue,
 					};
-					<dyn NetworkService>::add_known_address(&**self, peer_id, addr);
+					<dyn NetworkService>::add_known_address(&**self, peer_id, addr.clone());
+					addrs.push(addr);
 					found_peer_id = Some(peer_id);
 				}
-				found_peer_id
+				(found_peer_id, addrs)
 			},
 		};
 
@@ -276,7 +278,7 @@ impl Network for Arc<dyn NetworkService> {
 			None => {
 				gum::debug!(target: LOG_TARGET, "Discovering authority failed");
 				match pending_response
-					.send(Err(RequestFailure::Network(OutboundFailure::DialFailure)))
+					.send(Err(RequestFailure::Network(OutboundFailure::DialFailure, None)))
 				{
 					Err(_) => {
 						gum::debug!(target: LOG_TARGET, "Sending failed request response failed.")
@@ -294,6 +296,7 @@ impl Network for Arc<dyn NetworkService> {
 			protocol = %req_protocol_names.get_name(protocol),
 			fallback_protocol = ?fallback_request.as_ref().map(|(_, p)| req_protocol_names.get_name(*p)),
 			?if_disconnected,
+			?resolved_addrs,
 			"Starting request",
 		);
 

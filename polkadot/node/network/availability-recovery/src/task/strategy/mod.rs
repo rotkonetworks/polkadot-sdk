@@ -565,7 +565,7 @@ impl State {
 						RequestError::NetworkError(err) => {
 							// No debug logs on general network errors - that became very
 							// spammy occasionally.
-							if let RequestFailure::Network(OutboundFailure::Timeout) = err {
+							if let RequestFailure::Network(OutboundFailure::Timeout, _) = err {
 								metrics.on_chunk_request_timeout(strategy_type);
 							} else {
 								metrics.on_chunk_request_error(strategy_type);

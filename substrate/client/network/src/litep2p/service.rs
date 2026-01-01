@@ -552,7 +552,7 @@ impl NetworkRequest for Litep2pNetworkService {
 			// The channel can only be closed if the network worker no longer exists. If the
 			// network worker no longer exists, then all connections to `target` are necessarily
 			// closed, and we legitimately report this situation as a "ConnectionClosed".
-			Err(_) => Err(RequestFailure::Network(OutboundFailure::ConnectionClosed)),
+			Err(_) => Err(RequestFailure::Network(OutboundFailure::ConnectionClosed, None)),
 		}
 	}
 

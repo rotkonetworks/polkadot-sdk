@@ -95,8 +95,17 @@ impl RequestError {
 			Self::NetworkError(network::RequestFailure::Obsolete) |
 			Self::NetworkError(network::RequestFailure::Network(
 				network::OutboundFailure::Timeout,
+				_,
 			)) => true,
 			_ => false,
+		}
+	}
+
+	/// Returns the peer address from the underlying network failure, if available.
+	pub fn peer_address(&self) -> Option<&network::Multiaddr> {
+		match self {
+			Self::NetworkError(failure) => failure.peer_address(),
+			_ => None,
 		}
 	}
 }

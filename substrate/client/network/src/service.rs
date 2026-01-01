@@ -611,6 +611,7 @@ where
 			reported_invalid_boot_nodes: Default::default(),
 			peer_store_handle: Arc::clone(&peer_store_handle),
 			notif_protocol_handles,
+			peer_endpoints: HashMap::new(),
 			_marker: Default::default(),
 			_block: Default::default(),
 		})
@@ -1214,7 +1215,7 @@ where
 			// The channel can only be closed if the network worker no longer exists. If the
 			// network worker no longer exists, then all connections to `target` are necessarily
 			// closed, and we legitimately report this situation as a "ConnectionClosed".
-			Err(_) => Err(RequestFailure::Network(OutboundFailure::ConnectionClosed)),
+			Err(_) => Err(RequestFailure::Network(OutboundFailure::ConnectionClosed, None)),
 		}
 	}
 
@@ -1371,6 +1372,8 @@ where
 	peer_store_handle: Arc<dyn PeerStoreProvider>,
 	/// Notification protocol handles.
 	notif_protocol_handles: Vec<protocol::ProtocolHandle>,
+	/// Cache of peer endpoints for logging purposes. Stores the last known endpoint for each peer.
+	peer_endpoints: HashMap<PeerId, ConnectedPoint>,
 	/// Marker to pin the `H` generic. Serves no purpose except to not break backwards
 	/// compatibility.
 	_marker: PhantomData<H>,
@@ -1536,11 +1539,30 @@ where
 				}
 			},
 			SwarmEvent::Behaviour(BehaviourOut::RequestFinished {
+				peer,
 				protocol,
 				duration,
 				result,
-				..
-			}) =>
+			}) => {
+				if let Err(ref err) = result {
+					// Try to get current endpoint from behaviour, fall back to cached endpoint
+					let endpoint = self
+						.network_service
+						.behaviour_mut()
+						.node(&peer)
+						.and_then(|info| info.endpoint().cloned())
+						.or_else(|| self.peer_endpoints.get(&peer).cloned());
+
+					debug!(
+						target: LOG_TARGET,
+						"Request to {:?} ({:?}) on {:?} failed: {:?}",
+						peer,
+						endpoint,
+						protocol,
+						err,
+					);
+				}
+
 				if let Some(metrics) = self.metrics.as_ref() {
 					match result {
 						Ok(_) => {
@@ -1555,14 +1577,14 @@ where
 								RequestFailure::UnknownProtocol => "unknown-protocol",
 								RequestFailure::Refused => "refused",
 								RequestFailure::Obsolete => "obsolete",
-								RequestFailure::Network(OutboundFailure::DialFailure) =>
+								RequestFailure::Network(OutboundFailure::DialFailure, _) =>
 									"dial-failure",
-								RequestFailure::Network(OutboundFailure::Timeout) => "timeout",
-								RequestFailure::Network(OutboundFailure::ConnectionClosed) =>
+								RequestFailure::Network(OutboundFailure::Timeout, _) => "timeout",
+								RequestFailure::Network(OutboundFailure::ConnectionClosed, _) =>
 									"connection-closed",
-								RequestFailure::Network(OutboundFailure::UnsupportedProtocols) =>
+								RequestFailure::Network(OutboundFailure::UnsupportedProtocols, _) =>
 									"unsupported",
-								RequestFailure::Network(OutboundFailure::Io(_)) => "io",
+								RequestFailure::Network(OutboundFailure::Io(_), _) => "io",
 							};
 
 							metrics
@@ -1571,7 +1593,8 @@ where
 								.inc();
 						},
 					}
-				},
+				}
+			},
 			SwarmEvent::Behaviour(BehaviourOut::ReputationChanges { peer, changes }) => {
 				for change in changes {
 					self.peer_store_handle.report_peer(peer.into(), change);
@@ -1703,10 +1726,13 @@ where
 				concurrent_dial_errors,
 				..
 			} => {
+				// Cache the endpoint for this peer for error logging purposes
+				self.peer_endpoints.insert(peer_id, endpoint.clone());
+
 				if let Some(errors) = concurrent_dial_errors {
-					debug!(target: LOG_TARGET, "Libp2p => Connected({:?}) with errors: {:?}", peer_id, errors);
+					debug!(target: LOG_TARGET, "Libp2p => Connected({:?}) via {:?} with errors: {:?}", peer_id, endpoint, errors);
 				} else {
-					debug!(target: LOG_TARGET, "Libp2p => Connected({:?})", peer_id);
+					debug!(target: LOG_TARGET, "Libp2p => Connected({:?}) via {:?}", peer_id, endpoint);
 				}
 
 				if let Some(metrics) = self.metrics.as_ref() {

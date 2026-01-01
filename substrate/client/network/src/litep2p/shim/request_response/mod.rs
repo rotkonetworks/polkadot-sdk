@@ -411,7 +411,7 @@ impl RequestResponseProtocol {
 				Some((RequestFailure::Refused, reason))
 			},
 			RequestResponseError::Timeout =>
-				Some((RequestFailure::Network(OutboundFailure::Timeout), "timeout")),
+				Some((RequestFailure::Network(OutboundFailure::Timeout, None), "timeout")),
 			RequestResponseError::Canceled => {
 				log::debug!(
 					target: LOG_TARGET,

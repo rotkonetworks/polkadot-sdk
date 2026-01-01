@@ -1015,17 +1015,17 @@ where
 				debug!(target: LOG_TARGET, "Request to peer {peer_id:?} failed: {e:?}.");
 
 				match e {
-					RequestFailure::Network(OutboundFailure::Timeout) => {
+					RequestFailure::Network(OutboundFailure::Timeout, _) => {
 						self.network_service.report_peer(peer_id, rep::TIMEOUT);
 						self.network_service
 							.disconnect_peer(peer_id, self.block_announce_protocol_name.clone());
 					},
-					RequestFailure::Network(OutboundFailure::UnsupportedProtocols) => {
+					RequestFailure::Network(OutboundFailure::UnsupportedProtocols, _) => {
 						self.network_service.report_peer(peer_id, rep::BAD_PROTOCOL);
 						self.network_service
 							.disconnect_peer(peer_id, self.block_announce_protocol_name.clone());
 					},
-					RequestFailure::Network(OutboundFailure::DialFailure) => {
+					RequestFailure::Network(OutboundFailure::DialFailure, _) => {
 						self.network_service
 							.disconnect_peer(peer_id, self.block_announce_protocol_name.clone());
 					},
@@ -1034,7 +1034,7 @@ where
 						self.network_service
 							.disconnect_peer(peer_id, self.block_announce_protocol_name.clone());
 					},
-					RequestFailure::Network(OutboundFailure::ConnectionClosed) |
+					RequestFailure::Network(OutboundFailure::ConnectionClosed, _) |
 					RequestFailure::NotConnected => {
 						self.network_service
 							.disconnect_peer(peer_id, self.block_announce_protocol_name.clone());
@@ -1049,7 +1049,7 @@ where
 							response receiver.",
 						);
 					},
-					RequestFailure::Network(OutboundFailure::Io(_)) => {
+					RequestFailure::Network(OutboundFailure::Io(_), _) => {
 						self.network_service.report_peer(peer_id, rep::IO);
 						self.network_service
 							.disconnect_peer(peer_id, self.block_announce_protocol_name.clone());

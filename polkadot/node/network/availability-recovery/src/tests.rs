@@ -244,7 +244,7 @@ enum Has {
 
 impl Has {
 	fn timeout() -> Self {
-		Has::NetworkError(RequestFailure::Network(OutboundFailure::Timeout))
+		Has::NetworkError(RequestFailure::Network(OutboundFailure::Timeout, None))
 	}
 }
 
