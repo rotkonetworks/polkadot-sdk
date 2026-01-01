@@ -19,16 +19,19 @@ id = 1000
 cumulus_based = true
 chain = "asset-hub-rococo-local"
 
-# collator 1 - normal
+# collator 1 - normal (also used for spec building)
 [[parachains.collators]]
-name = "collator1"
+name = "collator-normal"
 validator = true
 command = "./target/release/polkadot-parachain"
 args = ["--force-authoring"]
 
-# collator 2 - isolated (for held tx testing)
+# collator 2 - isolated with held queue (submit held tx here)
 [[parachains.collators]]
-name = "collator2"
+name = "collator-held"
 validator = true
-command = "./target/release/polkadot-parachain"
-args = ["--force-authoring", "--reserved-only", "--rpc-methods", "unsafe"]
+command = "./target/release/polkadot-omni-node"
+args = [
+    "--force-authoring",
+    "--enable-held-queue"
+]
